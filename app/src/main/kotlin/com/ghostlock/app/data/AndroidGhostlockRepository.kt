@@ -333,19 +333,21 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
             }
             onLog("ksud at: ${ksud.absolutePath}")
 
-            val cmd1 = "i32 1 s16 \"${ksud.absolutePath}\" i32 1 s16 \"late-load\" s16 '${ksud.parent}/.ghostlock_ksu.log' i32 600"
-            val miuiService = "service call miui.mqsas.IMQSNative 21 $cmd1"
-            onLog("invoking MIUI service call")
-            val serviceCmd = ProcessBuilder("/system/bin/sh", "-c", miuiService)
-                .directory(workDir)
-                .redirectErrorStream(true)
-                .apply {
-                    environment()["GHOSTLOCK_HOME"] = workDir.absolutePath
-                    environment()["TMPDIR"] = workDir.absolutePath
-                    environment()["HOME"] = workDir.absolutePath
-                }
-            val svcCode = runProcess(serviceCmd, onLog = onLog, timeoutSeconds = 600)
-            onLog("MIUI service exit code=$svcCode")
+            /* W1 succeeded: SELinux is permissive. Invoke the vendor MIUI
+             * service via binder directly from this app process, bypassing
+             * the `service` CLI (which fails under the app seccomp filter
+             * with "does not exist").
+             *
+             * Equivalent of:
+             *   service call miui.mqsas.IMQSNative 21 \
+             *     i32 1 s16 <ksud> i32 1 s16 late-load s16 <log> i32 600
+             *
+             * IMQSNative is a hidden system service; the only way to reach
+             * its binder from an untrusted app is reflection on
+             * ServiceManager followed by a raw Parcel transact.
+             */
+            val svcCode = invokeImqsNative(ksud.absolutePath, onLog)
+            onLog("MIUI binder exit code=$svcCode")
             svcCode
         } catch (error: CancellationException) {
             throw error
@@ -551,6 +553,50 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
 
     private fun firstValidProperty(vararg keys: String): String? =
         keys.asSequence().firstNotNullOfOrNull { validDeviceName(systemProperty(it)) }
+
+    /** Reflectively call miui.mqsas.IMQSNative transaction 21 (late-load).
+     * Bypasses the `service` CLI so the app seccomp filter cannot break the
+     * binder handshake. Parcel layout mirrors `service call` args:
+     *   i32 1 s16 <so> i32 1 s16 late-load s16 <log> i32 600
+     * Returns 0 on a clean binder reply, nonzero otherwise. */
+    private fun invokeImqsNative(ksudPath: String, onLog: (String) -> Unit): Int {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "miui.mqsas.IMQSNative") as? android.os.IBinder
+            if (binder == null) {
+                onLog("IMQSNative binder is null (service not registered or hidden from app)")
+                return 10
+            }
+            onLog("IMQSNative binder acquired")
+
+            val data = android.os.Parcel.obtain()
+            val reply = android.os.Parcel.obtain()
+            try {
+                data.writeInterfaceToken("miui.mqsas.IMQSNative")
+                data.writeInt(1)
+                data.writeString(ksudPath)
+                data.writeInt(1)
+                data.writeString("late-load")
+                data.writeString("${File(ksudPath).parent}/.ghostlock_ksu.log")
+                data.writeInt(600)
+
+                val ok = binder.transact(21, data, reply, 0)
+                onLog("IMQSNative transact(21) ok=$ok")
+                if (!ok) return 1
+                // Standard reply: read back exception header (0 = none).
+                reply.readException()
+                onLog("IMQSNative reply exception=0")
+                return 0
+            } finally {
+                data.recycle()
+                reply.recycle()
+            }
+        } catch (error: Throwable) {
+            onLog("IMQSNative error: ${error}")
+            return 1
+        }
+    }
 
     private fun prepareKsud(workDir: File, onLog: (String) -> Unit): File? {
         val packages = listOf("me.weishu.kernelsu.pr", "me.weishu.kernelsu", "com.resukisu.resukisu", "com.kowx712.supermanager")
