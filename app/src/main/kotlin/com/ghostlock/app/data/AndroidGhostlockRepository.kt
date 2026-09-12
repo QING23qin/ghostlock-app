@@ -268,6 +268,93 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
         }
     }
 
+    /** W1-only variant: run the native binary with GHOSTLOCK_W1_ONLY=1 to flip
+     * SELinux into permissive, then invoke a vendor-specific service call (e.g.
+     * the MIUI IMQSNative hole) to load the KernelSU helper as late-load. */
+    override suspend fun runW1Only(onLog: (String) -> Unit): Int {
+        val workDir = filesDir
+        return try {
+            val binary = File(appContext.applicationInfo.nativeLibraryDir, "libghostlock.so")
+            require(binary.isFile) { "missing native binary: ${binary.absolutePath}" }
+            if (prepareKsud(workDir, onLog) != null) onLog("ksud ready") else onLog("warning: ksud not found")
+
+            val nativeLog = File(workDir, ".ghostlock_w1_native.log")
+            nativeLog.delete()
+            val nativeOffset = AtomicLong()
+            val tailer = Thread {
+                try {
+                    while (!Thread.currentThread().isInterrupted) {
+                        tailKsuLog(nativeLog, nativeOffset, onLog)
+                        Thread.sleep(200)
+                    }
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }.apply {
+                name = "w1-log-tailer"
+                isDaemon = true
+                start()
+            }
+
+            var w1Code = 1
+            try {
+                val command = ProcessBuilder(binary.absolutePath)
+                    .directory(workDir)
+                    .redirectErrorStream(true)
+                    .redirectOutput(nativeLog)
+                    .apply {
+                        environment()["GHOSTLOCK_HOME"] = workDir.absolutePath
+                        environment()["TMPDIR"] = workDir.absolutePath
+                        environment()["HOME"] = workDir.absolutePath
+                        environment()["GHOSTLOCK_W1_ONLY"] = "1"
+                    }
+                w1Code = runProcess(command, onLog = {}, captureOutput = false)
+            } finally {
+                withContext(Dispatchers.IO) {
+                    tailer.interrupt()
+                    tailer.join(1000)
+                    tailKsuLog(nativeLog, nativeOffset, onLog)
+                }
+            }
+            onLog("W1 exit code=$w1Code")
+            if (w1Code != 0) return 1
+
+            /* W1 succeeded: SELinux is permissive. Invoke the vendor MIUI
+             * service call to late-load the KernelSU helper as root.
+             * The ksud path is discovered the same way as the full
+             * GhostLock flow (prepareKsud) instead of hard-coding it:
+             * prepareKsud copies libksud.so from the installed
+             * KernelSU/ReSukiSU/KowSU package into <workDir>/ksud and
+             * chmods it executable, returning that File. */
+            val ksud = prepareKsud(workDir, onLog)
+            if (ksud == null) {
+                onLog("ksud not found; cannot late-load")
+                return 2
+            }
+            onLog("ksud at: ${ksud.absolutePath}")
+
+            val cmd1 = "i32 1 s16 \"${ksud.absolutePath}\" i32 1 s16 \"late-load\" s16 '${ksud.parent}/.ghostlock_ksu.log' i32 600"
+            val miuiService = "service call miui.mqsas.IMQSNative 21 $cmd1"
+            onLog("invoking MIUI service call")
+            val serviceCmd = ProcessBuilder("/system/bin/sh", "-c", miuiService)
+                .directory(workDir)
+                .redirectErrorStream(true)
+                .apply {
+                    environment()["GHOSTLOCK_HOME"] = workDir.absolutePath
+                    environment()["TMPDIR"] = workDir.absolutePath
+                    environment()["HOME"] = workDir.absolutePath
+                }
+            val svcCode = runProcess(serviceCmd, onLog = onLog, timeoutSeconds = 600)
+            onLog("MIUI service exit code=$svcCode")
+            svcCode
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            onLog("error: ${error::class.simpleName}: ${error.message}")
+            1
+        }
+    }
+
     override suspend fun readDocument(uri: String): String = appContext.contentResolver
         .openInputStream(uri.toUri())
         ?.bufferedReader()
