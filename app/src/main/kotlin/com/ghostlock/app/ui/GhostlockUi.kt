@@ -122,6 +122,7 @@ enum class DialogType { NONE, LIST, INPUT }
 data class GhostlockLogLine(val text: String, val color: Int)
 
 interface GhostlockActions {
+    fun onRunW1Only()
     fun onRun()
     fun onCloseExecutionSheet()
     fun onToggleAdvanced()
@@ -481,6 +482,16 @@ private fun PortraitContent(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        item(key = "run_w1") {
+            RunButton(
+                running = state.running,
+                supported = state.kernelSupported,
+                onClick = actions::onRunW1Only,
+                runningTextRes = R.string.action_run_w1_running,
+                idleTextRes = R.string.action_run_w1,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
@@ -517,6 +528,16 @@ private fun LandscapeContent(
                     running = state.running,
                     supported = state.kernelSupported,
                     onClick = actions::onRun,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item(key = "run_w1") {
+                RunButton(
+                    running = state.running,
+                    supported = state.kernelSupported,
+                    onClick = actions::onRunW1Only,
+                    runningTextRes = R.string.action_run_w1_running,
+                    idleTextRes = R.string.action_run_w1,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -731,9 +752,11 @@ private fun RunButton(
     supported: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    runningTextRes: Int = R.string.action_running,
+    idleTextRes: Int = R.string.action_run,
 ) {
     TextButton(
-        text = stringResource(if (running) R.string.action_running else R.string.action_run),
+        text = stringResource(if (running) runningTextRes else idleTextRes),
         enabled = supported && !running,
         colors = ButtonDefaults.textButtonColorsPrimary(),
         onClick = onClick,

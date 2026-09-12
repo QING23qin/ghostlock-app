@@ -108,6 +108,7 @@ private fun GhostlockRoute(
     GhostlockApp(
         state = state,
         actions = object : GhostlockActions {
+            override fun onRunW1Only() = viewModel.onRunW1Only()
             override fun onRun() = viewModel.onRun()
             override fun onCloseExecutionSheet() = viewModel.onCloseExecutionSheet()
             override fun onToggleAdvanced() = viewModel.toggleAdvanced()

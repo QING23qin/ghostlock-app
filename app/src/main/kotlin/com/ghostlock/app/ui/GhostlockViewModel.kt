@@ -17,6 +17,7 @@ import com.ghostlock.app.domain.usecase.ParseSourceUseCase
 import com.ghostlock.app.domain.usecase.PublishOffsetsUseCase
 import com.ghostlock.app.domain.usecase.ReadDocumentUseCase
 import com.ghostlock.app.domain.usecase.RunExploitUseCase
+import com.ghostlock.app.domain.usecase.RunW1OnlyUseCase
 import com.ghostlock.app.domain.usecase.SelectCpuPairUseCase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,7 @@ class GhostlockViewModel(
     private val publishOffsetsUseCase = PublishOffsetsUseCase(repository)
     private val readDocumentUseCase = ReadDocumentUseCase(repository)
     private val runExploitUseCase = RunExploitUseCase(repository)
+    private val runW1OnlyUseCase = RunW1OnlyUseCase(repository)
     private val formatLog = FormatLogUseCase()
 
     val state = mutableState.asStateFlow()
@@ -103,6 +105,30 @@ class GhostlockViewModel(
             try {
                 val code = runExploitUseCase(pair, ::appendLog)
                 appendLog(if (code == 0) "result: exploit completed" else "result: exploit failed (exit code=$code)")
+                appendLog("exit code=$code")
+            } finally {
+                endOperation()
+                send(GhostlockEffect.KeepScreenAwake(false))
+            }
+        }
+    }
+
+    fun onRunW1Only() {
+        val snapshot = kernelSnapshot ?: return
+        if (!snapshot.kernelSupported) {
+            if (beginOperation()) {
+                appendLog("result: exploit chain unsupported by this kernel")
+                endOperation()
+            }
+            return
+        }
+        if (!beginOperation()) return
+        send(GhostlockEffect.KeepScreenAwake(true))
+        appendLog("==== start (W1-only + MIUI service) ====")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val code = runW1OnlyUseCase(::appendLog)
+                appendLog(if (code == 0) "result: W1 + service completed" else "result: W1 + service failed (exit code=$code)")
                 appendLog("exit code=$code")
             } finally {
                 endOperation()
